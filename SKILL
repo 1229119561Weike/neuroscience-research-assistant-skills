@@ -1,0 +1,791 @@
+# Neuroscience Research Assistant Skill
+
+---
+name: neuroscience-research-assistant
+description: >
+  专为神经科学研究者设计的 AI 助理，集成影像预处理、电生理分析、文献挖掘与神经动力学模拟功能。
+  支持 fMRI/EEG/MEG 数据处理流水线、PubMed 文献自动化检索、The Virtual Brain (TVB) 计算模拟，
+  以及交互式 3D 脑区可视化输出。
+version: "1.0.0"
+author: flowithOS
+tags:
+  - neuroscience
+  - fMRI
+  - EEG
+  - computational-modeling
+  - literature-mining
+  - brain-imaging
+---
+
+## Overview
+
+本 Skill 引导研究者完成从**文献调研 → 数据处理 → 计算模拟 → 可视化输出**的完整研究闭环。
+每个模块均提供可直接执行的 Python 代码模板，并附有结构化输出规范。
+
+---
+
+## §0 启动协议（Onboarding）
+
+### 触发方式
+用户输入以下任意关键词时激活本 Skill：
+- "neuroscience"、"神经科学"、"fMRI"、"EEG"、"脑成像"、"神经动力学"
+
+### 引导流程
+
+```
+[ASSISTANT PROMPT]
+欢迎使用神经科学研究助理。请告诉我您当前的研究类型：
+
+  1. 🧠 脑影像分析   —— fMRI / structural MRI / DTI
+  2. ⚡ 电生理分析   —— EEG / MEG / LFP / spike sorting
+  3. 🔬 计算模拟     —— 神经动力学 / 脑网络模型 (TVB)
+  4. 📚 文献挖掘     —— PubMed 检索 / 脑区相关性提取
+  5. 🔄 全流程整合   —— 以上多模态组合
+
+请输入对应编号或描述您的具体需求：
+```
+
+### 用户输入解析规则
+
+| 用户输入 | 跳转模块 |
+|---------|---------|
+| 1 / fMRI / 影像 | §2A (Nilearn 流水线) |
+| 2 / EEG / 电生理 | §2B (MNE 流水线) |
+| 3 / 模拟 / TVB | §3 计算模拟 |
+| 4 / 文献 / PubMed | §1 文献挖掘 |
+| 5 / 全流程 | §1 → §2 → §3 → §4 |
+
+---
+
+## §1 文献挖掘（Literature Mining）
+
+### 1.1 PubMed API 调用逻辑
+
+```python
+# ============================================================
+# 模块：PubMed 自动化文献检索
+# 依赖：requests, xml.etree.ElementTree, pandas
+# ============================================================
+import requests
+import xml.etree.ElementTree as ET
+import pandas as pd
+from time import sleep
+
+PUBMED_ESEARCH = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+PUBMED_EFETCH  = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+
+def search_pubmed(query: str, max_results: int = 20) -> list[str]:
+    """
+    在 PubMed 上搜索，返回 PMID 列表。
+    示例 query: "hippocampus memory fMRI[Title/Abstract]"
+    """
+    params = {
+        "db": "pubmed",
+        "term": query,
+        "retmax": max_results,
+        "retmode": "json",
+        "sort": "relevance"
+    }
+    response = requests.get(PUBMED_ESEARCH, params=params)
+    response.raise_for_status()
+    pmids = response.json()["esearchresult"]["idlist"]
+    return pmids
+
+def fetch_abstracts(pmids: list[str]) -> pd.DataFrame:
+    """
+    批量获取摘要，返回结构化 DataFrame。
+    列：pmid | title | abstract | authors | year | journal
+    """
+    records = []
+    for pmid in pmids:
+        sleep(0.34)  # NCBI 速率限制：3 req/s
+        params = {
+            "db": "pubmed",
+            "id": pmid,
+            "rettype": "xml",
+            "retmode": "xml"
+        }
+        resp = requests.get(PUBMED_EFETCH, params=params)
+        root = ET.fromstring(resp.content)
+        article = root.find(".//PubmedArticle")
+        if article is None:
+            continue
+
+        title    = article.findtext(".//ArticleTitle", default="N/A")
+        abstract = " ".join(t.text or "" for t in article.findall(".//AbstractText"))
+        year     = article.findtext(".//PubDate/Year", default="N/A")
+        journal  = article.findtext(".//Journal/Title", default="N/A")
+        authors  = [
+            f"{a.findtext('LastName', '')} {a.findtext('ForeName', '')}".strip()
+            for a in article.findall(".//Author")[:3]
+        ]
+        records.append({
+            "pmid": pmid,
+            "title": title,
+            "abstract": abstract,
+            "authors": "; ".join(authors),
+            "year": year,
+            "journal": journal
+        })
+    return pd.DataFrame(records)
+
+
+# ---- 使用示例 ----
+if __name__ == "__main__":
+    pmids = search_pubmed(
+        query="hippocampus memory encoding fMRI[Title/Abstract]",
+        max_results=10
+    )
+    df = fetch_abstracts(pmids)
+    df.to_csv("pubmed_results.csv", index=False)
+    print(df[["pmid", "title", "year", "journal"]].to_markdown())
+```
+
+### 1.2 脑区相关性提取（NLP Pipeline）
+
+```python
+# ============================================================
+# 模块：基于关键词的脑区相关性提取
+# 依赖：spacy, collections
+# 安装：pip install spacy && python -m spacy download en_core_web_sm
+# ============================================================
+import spacy
+from collections import Counter
+import re
+
+# 预定义脑区词典（可扩展）
+BRAIN_REGIONS = [
+    "hippocampus", "amygdala", "prefrontal cortex", "anterior cingulate",
+    "thalamus", "cerebellum", "insula", "basal ganglia", "putamen",
+    "caudate nucleus", "nucleus accumbens", "orbitofrontal cortex",
+    "dorsolateral prefrontal cortex", "ventromedial prefrontal cortex",
+    "parahippocampal gyrus", "entorhinal cortex", "fusiform gyrus",
+    "superior temporal sulcus", "motor cortex", "somatosensory cortex",
+    "visual cortex", "auditory cortex", "Broca's area", "Wernicke's area"
+]
+
+nlp = spacy.load("en_core_web_sm")
+
+def extract_brain_region_cooccurrence(abstracts: list[str]) -> pd.DataFrame:
+    """
+    从摘要列表中提取脑区共现关系。
+    返回 DataFrame：region_a | region_b | co_count
+    """
+    from itertools import combinations
+    pairs = Counter()
+
+    for text in abstracts:
+        text_lower = text.lower()
+        found = [r for r in BRAIN_REGIONS if r in text_lower]
+        for pair in combinations(sorted(set(found)), 2):
+            pairs[pair] += 1
+
+    rows = [{"region_a": a, "region_b": b, "co_count": c}
+            for (a, b), c in pairs.most_common(50)]
+    return pd.DataFrame(rows)
+```
+
+### 1.3 结构化输出模板
+
+```markdown
+## 文献挖掘报告
+
+**检索词**：{query}
+**检索日期**：{date}
+**命中文献数**：{n_papers}
+
+### 高频脑区 Top 10
+| 脑区 | 出现频次 |
+|------|---------|
+| {region_1} | {count_1} |
+...
+
+### 脑区共现热力图
+（见附件 brain_region_cooccurrence.png）
+
+### 推荐精读文献
+1. {title_1} — {authors_1} ({year_1})
+   摘要摘要...
+```
+
+---
+
+## §2A 脑影像分析（fMRI — Nilearn 流水线）
+
+### 2A.1 环境依赖
+
+```bash
+pip install nilearn nibabel scipy pandas matplotlib seaborn
+```
+
+### 2A.2 fMRI 预处理流水线
+
+```python
+# ============================================================
+# 模块：fMRI 静息态预处理 + 功能连接矩阵
+# 依赖：nilearn, nibabel, numpy, matplotlib
+# ============================================================
+import numpy as np
+import matplotlib.pyplot as plt
+from nilearn import datasets, image, signal, connectome
+from nilearn.maskers import NiftiLabelsMasker
+from nilearn.plotting import plot_matrix, plot_connectome
+
+# ------ 1. 加载示例数据（替换为真实路径）------
+dataset    = datasets.fetch_development_fmri(n_subjects=1)
+fmri_img   = dataset.func[0]
+confounds  = dataset.confounds[0]
+
+# ------ 2. 图谱选择（AAL / Schaefer / Destrieux）------
+atlas = datasets.fetch_atlas_aal(version="SPM12")
+atlas_img    = atlas.maps
+atlas_labels = atlas.labels
+
+# ------ 3. 信号提取 ------
+masker = NiftiLabelsMasker(
+    labels_img=atlas_img,
+    standardize=True,
+    memory="nilearn_cache",
+    verbose=0,
+    detrend=True,
+    low_pass=0.1,
+    high_pass=0.01,
+    t_r=2.0          # 替换为实际 TR（秒）
+)
+time_series = masker.fit_transform(fmri_img, confounds=confounds)
+
+# ------ 4. 功能连接矩阵 ------
+correlation_measure = connectome.ConnectivityMeasure(
+    kind="correlation"  # 可选: "partial correlation", "tangent"
+)
+conn_matrix = correlation_measure.fit_transform([time_series])[0]
+
+# ------ 5. 可视化 ------
+fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+
+# 热力图
+plot_matrix(
+    conn_matrix,
+    labels=atlas_labels,
+    colorbar=True,
+    vmax=0.8,
+    vmin=-0.8,
+    title="功能连接矩阵 (AAL-90)",
+    axes=axes[0]
+)
+
+# 连接组图
+coords = atlas.region_coords
+plot_connectome(
+    conn_matrix,
+    coords,
+    edge_threshold="90%",
+    title="Top 10% 功能连接",
+    display_mode="ortho",
+    axes=axes[1]
+)
+
+plt.tight_layout()
+plt.savefig("functional_connectivity.png", dpi=150)
+print("已保存: functional_connectivity.png")
+```
+
+### 2A.3 结构化输出模板
+
+```markdown
+## fMRI 分析报告
+
+**被试数量**：{n_subjects}
+**图谱**：{atlas_name}（{n_regions} 脑区）
+**TR**：{tr}s | **扫描时长**：{duration}s
+
+### 关键功能连接（|r| > 0.5）
+| 脑区 A | 脑区 B | 相关系数 r |
+|--------|--------|-----------|
+| {region_a} | {region_b} | {r_value} |
+
+### 默认网络（DMN）节点
+- mPFC, PCC, Angular Gyrus, Hippocampus
+
+### 输出文件
+- functional_connectivity.png
+- conn_matrix.csv
+```
+
+---
+
+## §2B 电生理分析（EEG/MEG — MNE 流水线）
+
+### 2B.1 环境依赖
+
+```bash
+pip install mne mne-bids scipy pandas matplotlib
+```
+
+### 2B.2 EEG 预处理流水线
+
+```python
+# ============================================================
+# 模块：EEG 预处理 + 时频分析
+# 依赖：mne, numpy, matplotlib
+# ============================================================
+import mne
+import numpy as np
+import matplotlib.pyplot as plt
+
+# ------ 1. 数据加载 ------
+# 支持格式：.fif / .edf / .bdf / .set (EEGLAB) / .vhdr (BrainVision)
+raw = mne.io.read_raw_fif("sample_raw.fif", preload=True, verbose=False)
+# 对于 EDF：raw = mne.io.read_raw_edf("data.edf", preload=True)
+
+print(raw.info)
+print(f"采样率: {raw.info['sfreq']} Hz")
+print(f"通道数: {len(raw.ch_names)}")
+
+# ------ 2. 预处理流水线 ------
+# 2.1 带通滤波（0.1–40 Hz）
+raw.filter(l_freq=0.1, h_freq=40.0, fir_design="firwin")
+
+# 2.2 陷波滤波（去工频干扰）
+raw.notch_filter(freqs=[50, 100])  # 欧洲用 50 Hz，美国用 60 Hz
+
+# 2.3 坏导标注 & 插值
+raw.plot(n_channels=30, title="原始数据检查")
+raw.interpolate_bads(reset_bads=True)
+
+# 2.4 重参考（平均参考）
+raw.set_eeg_reference("average", projection=True)
+raw.apply_proj()
+
+# 2.5 ICA 去伪迹（眼电、心电）
+from mne.preprocessing import ICA
+ica = ICA(n_components=20, random_state=97, max_iter="auto")
+ica.fit(raw)
+ica.plot_components()
+# 手动标注或自动检测 EOG 伪迹
+eog_indices, eog_scores = ica.find_bads_eog(raw)
+ica.exclude = eog_indices
+raw_clean = ica.apply(raw.copy())
+
+# ------ 3. Epoch 切分 ------
+events, event_id = mne.events_from_annotations(raw_clean)
+epochs = mne.Epochs(
+    raw_clean,
+    events,
+    event_id=event_id,
+    tmin=-0.2,
+    tmax=0.8,
+    baseline=(-0.2, 0),
+    reject={"eeg": 100e-6},  # 100 μV 阈值拒绝
+    preload=True
+)
+print(f"保留 Epoch: {len(epochs)}")
+
+# ------ 4. 时频分析（Morlet 小波）------
+from mne.time_frequency import tfr_morlet
+
+freqs  = np.logspace(np.log10(4), np.log10(40), 20)  # 4–40 Hz
+n_cycles = freqs / 2.0  # 自适应周期数
+
+power, itc = tfr_morlet(
+    epochs,
+    freqs=freqs,
+    n_cycles=n_cycles,
+    return_itc=True,
+    average=True
+)
+
+# ------ 5. 可视化 ------
+power.plot(
+    picks=["Cz"],
+    baseline=(-0.2, 0),
+    mode="logratio",
+    title="时频功率谱 (Cz 电极)",
+    cmap="RdBu_r"
+)
+plt.savefig("tfr_power.png", dpi=150)
+print("已保存: tfr_power.png")
+```
+
+### 2B.3 ERP 分析模板
+
+```python
+# ------ ERP 分析 ------
+evoked = epochs["stimulus"].average()
+
+fig = evoked.plot(
+    picks=["Fz", "Cz", "Pz"],
+    titles={"eeg": "ERP — Fz / Cz / Pz"},
+    time_unit="ms",
+    ylim={"eeg": [-10, 10]}
+)
+fig.savefig("erp_waveform.png", dpi=150)
+
+# 地形图（N200 / P300 成分）
+times = [0.2, 0.3, 0.4]
+evoked.plot_topomap(times=times, ch_type="eeg", cmap="RdBu_r")
+plt.savefig("erp_topomap.png", dpi=150)
+```
+
+### 2B.4 结构化输出模板
+
+```markdown
+## EEG 分析报告
+
+**采样率**：{sfreq} Hz
+**通道数**：{n_channels}
+**有效 Epoch 数**：{n_epochs}（拒绝率 {reject_rate}%）
+
+### 关键 ERP 成分
+| 成分 | 峰值时间 | 峰值电压 | 头皮分布 |
+|------|---------|---------|---------|
+| N200 | ~200 ms | {amp} μV | 额中央区 |
+| P300 | ~350 ms | {amp} μV | 顶枕区 |
+
+### 频带功率
+| 频带 | 范围 | 平均功率 |
+|------|------|---------|
+| Theta | 4–8 Hz | {power} dB |
+| Alpha | 8–13 Hz | {power} dB |
+| Beta  | 13–30 Hz | {power} dB |
+| Gamma | 30–40 Hz | {power} dB |
+```
+
+---
+
+## §3 计算模拟（The Virtual Brain — TVB 范式）
+
+### 3.1 环境依赖
+
+```bash
+pip install tvb-library tvb-data numpy scipy matplotlib
+# 或完整安装：pip install tvb-framework
+```
+
+### 3.2 TVB 全脑网络模型流水线
+
+```python
+# ============================================================
+# 模块：TVB 全脑动力学模拟
+# 依赖：tvb, numpy, matplotlib
+# 参考：https://www.thevirtualbrain.org/tvb/zwei
+# ============================================================
+import numpy as np
+import matplotlib.pyplot as plt
+from tvb.simulator.lab import (
+    simulator, models, coupling, integrators,
+    monitors, connectivity
+)
+
+# ------ 1. 加载结构连接矩阵 ------
+# 使用 TVB 内置图谱（76 节点 Hagmann 连接组）
+conn = connectivity.Connectivity.from_file()
+conn.speed = np.array([4.0])   # 传导速度 (m/s)
+conn.configure()
+
+print(f"节点数: {conn.number_of_regions}")
+print(f"区域标签: {conn.region_labels[:5]}")
+
+# ------ 2. 神经质量模型选择 ------
+# 选项：Wilson-Cowan / Kuramoto / Hindmarsh-Rose / Generic2dOscillator
+neural_model = models.WilsonCowan(
+    c_ee=np.array([16.0]),   # E-E 连接权重
+    c_ei=np.array([12.0]),   # E-I 连接权重
+    c_ie=np.array([15.0]),   # I-E 连接权重
+    c_ii=np.array([3.0]),    # I-I 连接权重
+    tau_e=np.array([10.0]),  # 兴奋性时间常数 (ms)
+    tau_i=np.array([20.0])   # 抑制性时间常数 (ms)
+)
+
+# ------ 3. 全局耦合函数 ------
+coupl = coupling.Linear(a=np.array([0.0154]))
+
+# ------ 4. 数值积分器 ------
+integ = integrators.HeunStochastic(
+    dt=0.05,                              # 积分步长 (ms)
+    noise=noise.Additive(nsig=np.array([0.01]))  # 加性高斯噪声
+)
+
+# ------ 5. 监测器（模拟 BOLD / LFP）------
+mon_tavg = monitors.TemporalAverage(period=1.0)   # 时均（模拟 LFP）
+mon_bold  = monitors.Bold(period=2000.0)            # BOLD 信号（TR=2s）
+
+# ------ 6. 构建并运行模拟器 ------
+sim = simulator.Simulator(
+    model=neural_model,
+    connectivity=conn,
+    coupling=coupl,
+    integrator=integ,
+    monitors=(mon_tavg, mon_bold)
+)
+sim.configure()
+
+# 运行 10 秒模拟
+duration_ms = 10000.0
+print(f"开始模拟：{duration_ms} ms ...")
+(tavg_time, tavg_data), (bold_time, bold_data) = sim.run(simulation_length=duration_ms)
+
+print(f"时均数据形状: {tavg_data.shape}")   # (time, state_vars, nodes, modes)
+print(f"BOLD 数据形状: {bold_data.shape}")
+
+# ------ 7. 可视化 ------
+fig, axes = plt.subplots(2, 1, figsize=(14, 8))
+
+# 时均信号（前 5 个节点）
+axes[0].plot(tavg_time / 1000, tavg_data[:, 0, :5, 0])
+axes[0].set_xlabel("时间 (s)")
+axes[0].set_ylabel("活动强度")
+axes[0].set_title("神经活动时间序列（LFP 代理，前 5 节点）")
+axes[0].legend(conn.region_labels[:5])
+
+# BOLD 信号
+axes[1].plot(bold_time / 1000, bold_data[:, 0, :5, 0])
+axes[1].set_xlabel("时间 (s)")
+axes[1].set_ylabel("BOLD 信号")
+axes[1].set_title("模拟 BOLD 信号（前 5 节点）")
+
+plt.tight_layout()
+plt.savefig("tvb_simulation.png", dpi=150)
+print("已保存: tvb_simulation.png")
+```
+
+### 3.3 参数扫描协议
+
+```python
+# ============================================================
+# 模块：参数空间扫描（全局耦合强度 vs 传导速度）
+# ============================================================
+coupling_strengths = np.linspace(0.01, 0.05, 5)
+conduction_speeds  = np.array([3.0, 4.0, 6.0])
+
+results = {}
+for speed in conduction_speeds:
+    for g in coupling_strengths:
+        conn.speed = np.array([speed])
+        coupl.a    = np.array([g])
+        sim.configure()
+        (_, data), _ = sim.run(simulation_length=5000.0)
+        # 计算同步指标（Kuramoto 序参量）
+        phases   = np.angle(data[:, 0, :, 0])
+        r        = np.abs(np.mean(np.exp(1j * phases), axis=1)).mean()
+        results[(speed, g)] = r
+        print(f"speed={speed:.1f}, g={g:.3f} → R={r:.3f}")
+```
+
+### 3.4 参数指导清单
+
+| 参数 | 推荐范围 | 生理意义 |
+|------|---------|---------|
+| `coupling.a` (全局耦合 G) | 0.008–0.05 | 长程白质纤维传递效率 |
+| `conn.speed` | 2–10 m/s | 轴突传导速度 |
+| `tau_e` | 5–20 ms | 兴奋性突触时间常数 |
+| `tau_i` | 10–40 ms | 抑制性突触时间常数 |
+| `nsig` (噪声强度) | 0.001–0.05 | 神经元固有噪声水平 |
+
+---
+
+## §4 可视化协议（Visualization）
+
+### 4.1 3D 脑区渲染（Nilearn + Plotly）
+
+```python
+# ============================================================
+# 模块：3D 脑区渲染
+# 依赖：nilearn, plotly, nibabel
+# ============================================================
+from nilearn import plotting, datasets
+
+# ------ 静态 3D 玻璃脑 ------
+display = plotting.plot_glass_brain(
+    None,
+    display_mode="lyrz",
+    colorbar=True,
+    title="全脑功能连接网络"
+)
+# 叠加激活图（替换为真实统计图）
+stat_map = datasets.load_sample_motor_activation_image()
+plotting.plot_glass_brain(
+    stat_map,
+    colorbar=True,
+    threshold=3.0,
+    title="运动任务激活区域 (z > 3)",
+    display_mode="z",
+    cut_coords=5,
+    output_file="glass_brain_3d.png"
+)
+
+# ------ 交互式 3D Surface 渲染 ------
+from nilearn import surface
+
+fsaverage = datasets.fetch_surf_fsaverage()
+texture   = surface.vol_to_surf(stat_map, fsaverage.pial_right)
+
+fig = plotting.plot_surf_stat_map(
+    fsaverage.infl_right,
+    texture,
+    hemi="right",
+    title="右半球皮层激活",
+    threshold=1.0,
+    bg_map=fsaverage.sulc_right,
+    engine="plotly"   # 生成交互式 HTML
+)
+fig.write_html("surface_render.html")
+print("交互式 3D 渲染已保存: surface_render.html")
+```
+
+### 4.2 统计图表生成协议
+
+```python
+# ============================================================
+# 模块：神经科学标准统计图表套件
+# 依赖：matplotlib, seaborn, pandas, pingouin
+# ============================================================
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pandas as pd
+import pingouin as pg  # pip install pingouin
+
+plt.rcParams.update({
+    "font.family": "Arial",
+    "font.size": 12,
+    "axes.spines.top": False,
+    "axes.spines.right": False
+})
+
+def plot_brain_region_barplot(df: pd.DataFrame, region_col: str,
+                               value_col: str, group_col: str,
+                               output: str = "barplot.png"):
+    """
+    脑区激活柱状图（带误差棒与单被试数据点）
+    df 格式：region | value | group
+    """
+    fig, ax = plt.subplots(figsize=(10, 6))
+    sns.barplot(
+        data=df, x=region_col, y=value_col,
+        hue=group_col, capsize=0.1,
+        palette="muted", ax=ax
+    )
+    sns.stripplot(
+        data=df, x=region_col, y=value_col,
+        hue=group_col, dodge=True,
+        alpha=0.4, size=4, ax=ax, legend=False
+    )
+    ax.set_xlabel("脑区")
+    ax.set_ylabel("激活强度 (β)")
+    ax.set_title("组间脑区激活比较")
+    plt.xticks(rotation=45, ha="right")
+    plt.tight_layout()
+    fig.savefig(output, dpi=300)
+    return fig
+
+
+def plot_connectivity_circular(conn_matrix: np.ndarray,
+                                labels: list[str],
+                                output: str = "circular_conn.png"):
+    """
+    环形功能连接图（仅显示 top 20% 连接）
+    依赖：mne-connectivity
+    """
+    from mne_connectivity.viz import plot_connectivity_circle
+    threshold = np.percentile(np.abs(conn_matrix), 80)
+    fig, ax = plt.subplots(subplot_kw=dict(polar=True), figsize=(8, 8))
+    plot_connectivity_circle(
+        conn_matrix,
+        node_names=labels,
+        n_lines=50,
+        vmin=-1.0,
+        vmax=1.0,
+        colormap="RdBu_r",
+        title="功能连接环形图",
+        ax=ax
+    )
+    fig.savefig(output, dpi=150)
+    return fig
+
+
+def plot_tfr_heatmap(times: np.ndarray, freqs: np.ndarray,
+                     power: np.ndarray, output: str = "tfr_heatmap.png"):
+    """
+    时频热力图
+    power 形状：(n_freqs, n_times)
+    """
+    fig, ax = plt.subplots(figsize=(12, 5))
+    im = ax.pcolormesh(
+        times * 1000, freqs, power,
+        cmap="RdBu_r", shading="gouraud"
+    )
+    ax.set_yscale("log")
+    ax.set_xlabel("时间 (ms)")
+    ax.set_ylabel("频率 (Hz)")
+    ax.set_title("时频功率谱")
+    plt.colorbar(im, ax=ax, label="功率 (dB)")
+    ax.axvline(x=0, color="k", linestyle="--", linewidth=1.5, label="刺激呈现")
+    ax.legend()
+    plt.tight_layout()
+    fig.savefig(output, dpi=150)
+    return fig
+```
+
+### 4.3 报告输出规范
+
+生成的可视化文件应遵循以下命名与目录结构：
+
+```
+output/
+├── literature/
+│   ├── pubmed_results.csv
+│   ├── brain_region_frequency.png
+│   └── cooccurrence_heatmap.png
+├── imaging/
+│   ├── functional_connectivity.png
+│   ├── conn_matrix.csv
+│   ├── glass_brain_3d.png
+│   └── surface_render.html
+├── eeg/
+│   ├── erp_waveform.png
+│   ├── erp_topomap.png
+│   └── tfr_power.png
+├── simulation/
+│   ├── tvb_simulation.png
+│   └── parameter_sweep_results.csv
+└── summary_report.md
+```
+
+---
+
+## 快速参考卡（Quick Reference）
+
+### 核心 Python 库
+
+| 功能 | 库 | 安装命令 |
+|------|-----|---------|
+| fMRI 分析 | `nilearn` | `pip install nilearn` |
+| EEG/MEG 分析 | `mne` | `pip install mne` |
+| 脑网络模拟 | `tvb-library` | `pip install tvb-library` |
+| PubMed 检索 | `requests` | `pip install requests` |
+| 统计分析 | `pingouin` | `pip install pingouin` |
+| 交互可视化 | `plotly` | `pip install plotly` |
+| 数据处理 | `pandas` / `numpy` | `pip install pandas numpy` |
+| 神经影像 IO | `nibabel` | `pip install nibabel` |
+
+### 常用数据集与图谱
+
+| 资源 | 获取方式 |
+|------|---------|
+| HCP 数据集 | `nilearn.datasets.fetch_hcp_*` |
+| AAL 图谱 | `nilearn.datasets.fetch_atlas_aal()` |
+| Schaefer 图谱 | `nilearn.datasets.fetch_atlas_schaefer_2018()` |
+| MNE 示例数据 | `mne.datasets.sample.data_path()` |
+| TVB 连接组 | `tvb.simulator.lab.connectivity.Connectivity.from_file()` |
+
+---
+
+## 错误处理与常见问题
+
+| 错误 | 可能原因 | 解决方案 |
+|------|---------|---------|
+| `nibabel.loadsave.ImageFileError` | NIfTI 文件损坏或格式不匹配 | 用 `fslinfo` 检查头文件 |
+| `mne.io.read_raw_*` 内存溢出 | EEG 文件过大 | 使用 `preload=False` 懒加载 |
+| TVB `LinAlgError` | 结构连接矩阵不可逆 | 正则化：`conn.weights += 1e-5 * I` |
+| PubMed API 429 错误 | 请求速率超限 | 申请 API Key，增加 `sleep` 间隔 |
+| `spacy` 模型未找到 | 语言模型未下载 | `python -m spacy download en_core_web_sm` |
