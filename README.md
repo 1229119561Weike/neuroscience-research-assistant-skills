@@ -186,7 +186,8 @@ The TVB simulation module modeled D2 antagonism by reducing inhibitory coupling 
 
 **Glass Brain Visualization:**
 
-![D2 Antagonist Glass Brain](./Folders/temp/neuroscience/vis_plots/04_glass_brain_d2_antagonist.png)
+![D2 Antagonist Glass Brain]
+<img width="1830" height="629" alt="04_glass_brain_d2_antagonist" src="https://github.com/user-attachments/assets/82cef7fe-914e-41be-82a2-32bd11b88e30" />
 
 *Figure: Simulated neural activity overlay on glass brain under D2 receptor antagonist condition. Warmer colors indicate elevated activity in mPFC and striatal regions.*
 
