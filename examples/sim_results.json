@@ -1,0 +1,96 @@
+{
+  "simulation_meta": {
+    "model": "Wilson-Cowan Coupled Network",
+    "regions": [
+      "mPFC",
+      "Striatum",
+      "VTA"
+    ],
+    "duration_ms": 2000.0,
+    "dt_ms": 0.1,
+    "reference": "Jocham G et al. (2011). Dopamine DRD2 polymorphism alters reversal learning and associated neural activity. J Neurosci, 31(40):14320-14330.",
+    "d2_antagonist_mechanism": "Reduces c_ie and c_ii by 25% in mPFC and Striatum, modelling reduced GABAergic lateral inhibition under D2 blockade, resulting in enhanced signal-to-noise ratio (Jocham 2011)."
+  },
+  "fc_matrices": {
+    "control": [
+      [
+        1.0,
+        0.20162240349854443,
+        0.09845754732228444
+      ],
+      [
+        0.20162240349854443,
+        1.0,
+        -0.12761998153014353
+      ],
+      [
+        0.09845754732228444,
+        -0.12761998153014353,
+        1.0
+      ]
+    ],
+    "d2_antagonist": [
+      [
+        1.0,
+        0.6851589060449679,
+        0.1458133968574331
+      ],
+      [
+        0.6851589060449679,
+        1.0,
+        0.08034055031351708
+      ],
+      [
+        0.1458133968574331,
+        0.08034055031351708,
+        1.0
+      ]
+    ],
+    "delta": [
+      [
+        0.0,
+        0.48353650254642344,
+        0.04735584953514867
+      ],
+      [
+        0.48353650254642344,
+        0.0,
+        0.20796053184366062
+      ],
+      [
+        0.04735584953514867,
+        0.20796053184366062,
+        0.0
+      ]
+    ]
+  },
+  "mean_activity": {
+    "control": {
+      "mPFC": 0.2233659048350599,
+      "Striatum": 0.10140949505454992,
+      "VTA": 0.25797356477320144
+    },
+    "d2_antagonist": {
+      "mPFC": 0.506486778358242,
+      "Striatum": 0.264187339398693,
+      "VTA": 0.27669182207149096
+    },
+    "delta": {
+      "mPFC": 0.28312087352318205,
+      "Striatum": 0.16277784434414305,
+      "VTA": 0.01871825729828952
+    },
+    "pct_change": {
+      "mPFC": 126.75205397382672,
+      "Striatum": 160.51538630719753,
+      "VTA": 7.255881912624239
+    }
+  },
+  "output_files": {
+    "timeseries": "./Folders/temp/neuroscience/vis_plots/01_timeseries_comparison.png",
+    "fc_matrix": "./Folders/temp/neuroscience/vis_plots/02_fc_matrix_comparison.png",
+    "bar_chart": "./Folders/temp/neuroscience/vis_plots/03_mean_activity_bar.png",
+    "glass_brain": "./Folders/temp/neuroscience/vis_plots/04_glass_brain_d2_antagonist.png",
+    "psd": "./Folders/temp/neuroscience/vis_plots/05_power_spectral_density.png"
+  }
+}
